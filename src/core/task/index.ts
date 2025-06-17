@@ -1699,6 +1699,43 @@ export class Task {
 		return false
 	}
 
+	/**
+	 * Determines if a command is likely to create many files and should trigger a force refresh
+	 * @param command - The command string to analyze
+	 * @returns true if the command is likely to create files
+	 */
+	private isFileCreationCommand(command: string): boolean {
+		const lowerCommand = command.toLowerCase().trim()
+
+		// Commands that are known to create many files
+		const fileCreationPatterns = [
+			/^git\s+clone/, // git clone
+			/^gh\s+repo\s+clone/, // GitHub CLI clone
+			/^npm\s+install/, // npm install (creates node_modules)
+			/^yarn\s+install/, // yarn install
+			/^pnpm\s+install/, // pnpm install
+			/^pip\s+install/, // pip install
+			/^composer\s+install/, // composer install
+			/^bundle\s+install/, // bundle install (Ruby)
+			/^cargo\s+new/, // cargo new (Rust)
+			/^create-react-app/, // create-react-app
+			/^npx\s+create-/, // npx create-* commands
+			/^yarn\s+create/, // yarn create
+			/^ng\s+new/, // Angular CLI new
+			/^vue\s+create/, // Vue CLI create
+			/^rails\s+new/, // Rails new
+			/^django-admin\s+startproject/, // Django startproject
+			/^mkdir\s+-p.*\/.*\//, // mkdir with multiple nested directories
+			/^cp\s+-r/, // recursive copy
+			/^rsync\s+-r/, // recursive sync
+			/^tar\s+-x/, // tar extract
+			/^unzip/, // unzip
+			/^7z\s+x/, // 7zip extract
+		]
+
+		return fileCreationPatterns.some((pattern) => pattern.test(lowerCommand))
+	}
+
 	// Check if the tool should be auto-approved based on the settings
 	// and the path of the action. Returns true if the tool should be auto-approved
 	// based on the user's settings and the path of the action.
@@ -3367,7 +3404,14 @@ export class Task {
 								}
 
 								// Re-populate file paths in case the command modified the workspace (vscode listeners do not trigger unless the user manually creates/deletes files)
-								this.workspaceTracker.populateFilePaths()
+								// Use forceRefresh for commands that are likely to create many files (like git clone)
+								if (this.isFileCreationCommand(command)) {
+									await this.say("text", "🔄 Refreshing workspace file list...", undefined, undefined, true)
+									await this.workspaceTracker.forceRefresh()
+									await this.say("text", "✅ Workspace files updated", undefined, undefined, false)
+								} else {
+									await this.workspaceTracker.populateFilePaths()
+								}
 
 								pushToolResult(result)
 

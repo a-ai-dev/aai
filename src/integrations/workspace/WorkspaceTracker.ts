@@ -9,6 +9,10 @@ const cwd = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath
 class WorkspaceTracker {
 	private disposables: vscode.Disposable[] = []
 	private filePaths: Set<string> = new Set()
+	private periodicScanTimer?: NodeJS.Timeout
+	private lastScanTime: number = 0
+	private readonly SCAN_INTERVAL = 30000 // 30 seconds
+	private readonly DEBOUNCE_DELAY = 2000 // 2 seconds debounce
 
 	private get activeFiles() {
 		return new Set(
@@ -20,6 +24,7 @@ class WorkspaceTracker {
 
 	constructor() {
 		this.registerListeners()
+		this.startPeriodicScan()
 	}
 
 	async populateFilePaths() {
@@ -27,6 +32,23 @@ class WorkspaceTracker {
 		if (!cwd) {
 			return
 		}
+		const [files, _] = await listFiles(cwd, true, 1_000)
+		files.forEach((file) => this.filePaths.add(this.normalizeFilePath(file)))
+		this.workspaceDidUpdate()
+	}
+
+	/**
+	 * Forces a refresh of the workspace file paths
+	 * This is useful after commands that might have created/modified files externally
+	 * (like git clone, npm install, etc.)
+	 */
+	async forceRefresh() {
+		if (!cwd) {
+			return
+		}
+
+		// Clear existing paths and repopulate
+		this.filePaths.clear()
 		const [files, _] = await listFiles(cwd, true, 1_000)
 		files.forEach((file) => this.filePaths.add(this.normalizeFilePath(file)))
 		this.workspaceDidUpdate()
@@ -45,6 +67,17 @@ class WorkspaceTracker {
 
 		// Listen for tab groups changes
 		this.disposables.push(vscode.window.tabGroups.onDidChangeTabs(this.workspaceDidUpdate.bind(this)))
+
+		// Listen for window focus changes to trigger external scans
+		// This catches files added when user was outside VSCode
+		this.disposables.push(
+			vscode.window.onDidChangeWindowState((state) => {
+				if (state.focused) {
+					// User returned to VSCode, trigger external scan
+					this.triggerExternalScan()
+				}
+			}),
+		)
 
 		/*
 		 An event that is emitted when a workspace folder is added or removed.
@@ -126,7 +159,87 @@ class WorkspaceTracker {
 		return this.filePaths.delete(normalizedPath) || this.filePaths.delete(normalizedPath + "/")
 	}
 
+	/**
+	 * Starts periodic scanning to detect external file changes
+	 * This catches files added/removed outside of VSCode (file explorer, network drives, etc.)
+	 */
+	private startPeriodicScan() {
+		if (!cwd) {
+			return
+		}
+
+		// Initial scan after a short delay
+		setTimeout(() => {
+			this.performPeriodicScan()
+		}, 5000) // 5 second initial delay
+
+		// Set up periodic scanning
+		this.periodicScanTimer = setInterval(() => {
+			this.performPeriodicScan()
+		}, this.SCAN_INTERVAL)
+	}
+
+	/**
+	 * Performs a periodic scan to detect external changes
+	 * Uses debouncing to avoid excessive scanning
+	 */
+	private async performPeriodicScan() {
+		const now = Date.now()
+
+		// Debounce: don't scan if we just scanned recently
+		if (now - this.lastScanTime < this.DEBOUNCE_DELAY) {
+			return
+		}
+
+		this.lastScanTime = now
+
+		try {
+			// Get current file system state
+			const [currentFiles, _] = await listFiles(cwd!, true, 1_000)
+			const currentFilePaths = new Set(currentFiles.map((file) => this.normalizeFilePath(file)))
+
+			// Compare with our tracked files
+			const trackedPaths = new Set(this.filePaths)
+
+			// Find new files (in filesystem but not tracked)
+			const newFiles = [...currentFilePaths].filter((file) => !trackedPaths.has(file))
+
+			// Find deleted files (tracked but not in filesystem)
+			const deletedFiles = [...trackedPaths].filter((file) => !currentFilePaths.has(file))
+
+			// Update our tracking if changes detected
+			if (newFiles.length > 0 || deletedFiles.length > 0) {
+				console.log(`External file changes detected: +${newFiles.length} files, -${deletedFiles.length} files`)
+
+				// Update our file paths set
+				this.filePaths = currentFilePaths
+
+				// Notify about workspace changes
+				await this.workspaceDidUpdate()
+			}
+		} catch (error) {
+			// Silently handle errors to avoid spamming console
+			// This can happen with permission issues, network drives, etc.
+			console.debug("Periodic workspace scan error:", error)
+		}
+	}
+
+	/**
+	 * Triggers an immediate external scan (useful after user actions)
+	 */
+	async triggerExternalScan() {
+		// Reset debounce timer to allow immediate scan
+		this.lastScanTime = 0
+		await this.performPeriodicScan()
+	}
+
 	public dispose() {
+		// Clear periodic scan timer
+		if (this.periodicScanTimer) {
+			clearInterval(this.periodicScanTimer)
+			this.periodicScanTimer = undefined
+		}
+
 		this.disposables.forEach((d) => d.dispose())
 	}
 }
