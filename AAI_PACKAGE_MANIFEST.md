@@ -4,7 +4,7 @@
 
 **Package Name**: Workspace File Watcher Enhancement  
 **Version**: 1.0.0  
-**Author**: Alexandra (AAI)  
+**Author**: Sean Weber 
 **Target**: Cline VSCode Extension  
 **Issue Reference**: [GitHub Issue #4253](https://github.com/cline/cline/issues/4253)  
 **Status**: Production Ready  
